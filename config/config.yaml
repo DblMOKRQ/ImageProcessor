@@ -1,0 +1,8 @@
+addr: "localhost:8080"
+master_dsn: "postgres://postgres:123@localhost:5432/images?sslmode=disable"
+brokers: ["localhost:9092"]
+topic: "image_processing_tasks"
+group_id: "group"
+slaveDSNs: []
+log_level: "debug"
+watermarkPath: "./assets/watermark.png"

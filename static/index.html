@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Обработчик Изображений</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; background-color: #f4f4f9; }
+        .container { max-width: 1200px; margin: auto; }
+        h1, h2 { color: #333; }
+        #uploadForm { margin-bottom: 2em; }
+        #imageList { margin-top: 2em; display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 1em; }
+        .image-card { border: 1px solid #ccc; border-radius: 8px; padding: 1em; background-color: #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .image-card p { margin: 0.5em 0; word-wrap: break-word; }
+        .image-card .placeholder { width: 100%; min-height: 200px; object-fit: cover; background-color: #f0f0f0; display: flex; align-items: center; justify-content: center; border-radius: 4px; padding: 10px; text-align: center; }
+        .image-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5em; margin-top: 1em; }
+        .image-grid .grid-item { position: relative; }
+        .image-grid .grid-item img { width: 100%; height: auto; display: block; border-radius: 4px; }
+        .image-grid .grid-item .label { position: absolute; top: 0; left: 0; background: rgba(0, 0, 0, 0.6); color: white; padding: 2px 5px; font-size: 0.8em; border-radius: 4px 0 4px 0; }
+        .error { color: red; }
+        button { cursor: pointer; padding: 8px 12px; border-radius: 4px; border: 1px solid #ddd; background-color: #f0f0f0; }
+        button:hover { background-color: #e0e0e0; }
+        #uploadForm button { background-color: #007bff; color: white; border-color: #007bff; }
+        #uploadForm button:hover { background-color: #0056b3; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Обработчик Изображений</h1>
+    <form id="uploadForm" enctype="multipart/form-data">
+        <input type="file" id="imageFile" name="image" accept="image/jpeg,image/png,image/gif" required>
+        <button type="submit">Загрузить</button>
+    </form>
+    <div id="error-message" class="error"></div>
+
+    <h2>Загруженные изображения</h2>
+    <div id="imageList"></div>
+</div>
+
+<script>
+    const uploadForm = document.getElementById('uploadForm');
+    const imageFile = document.getElementById('imageFile');
+    const imageList = document.getElementById('imageList');
+    const errorMessage = document.getElementById('error-message');
+    const taskPolls = new Map();
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const tasks = JSON.parse(localStorage.getItem('imageTasks')) || [];
+        tasks.forEach(taskId => checkStatus(taskId));
+    });
+
+    uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        errorMessage.textContent = '';
+        if (!imageFile.files.length) return;
+
+        const formData = new FormData();
+        formData.append('image', imageFile.files[0]);
+
+        try {
+            const response = await fetch('/upload', { method: 'POST', body: formData });
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Ошибка загрузки');
+            }
+            const data = await response.json();
+            const taskId = data.taskID;
+
+            const tasks = JSON.parse(localStorage.getItem('imageTasks')) || [];
+            if (!tasks.includes(taskId)) {
+                tasks.unshift(taskId);
+                localStorage.setItem('imageTasks', JSON.stringify(tasks));
+            }
+            createImageCard(taskId);
+            checkStatus(taskId);
+            uploadForm.reset();
+        } catch (error) {
+            console.error('Ошибка загрузки:', error);
+            errorMessage.textContent = `Ошибка: ${error.message}`;
+        }
+    });
+
+    function createImageCard(taskId) {
+        if (document.getElementById(taskId)) return;
+        const card = document.createElement('div');
+        card.id = taskId;
+        card.className = 'image-card';
+        card.innerHTML = `
+                <p><strong>ID:</strong> ${taskId}</p>
+                <div class="placeholder">Обработка...</div>
+                <p><strong>Статус:</strong> ОЖИДАНИЕ</p>
+                <button onclick="deleteImage('${taskId}')">Удалить</button>
+            `;
+        imageList.prepend(card);
+    }
+
+    async function checkStatus(taskId) {
+        if (taskPolls.has(taskId)) return;
+        createImageCard(taskId);
+
+        const card = document.getElementById(taskId);
+        const statusElem = card.querySelector('p:nth-of-type(2)');
+        const imageContainer = card.querySelector('.placeholder');
+
+        const poll = setInterval(async () => {
+            try {
+                const response = await fetch(`/image/${taskId}`);
+                if (!response.ok) {
+                    if (response.status === 404) throw new Error('Изображение не найдено');
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Не удалось получить статус');
+                }
+                const data = await response.json();
+                const task = data.task;
+
+                statusElem.innerHTML = `<strong>Статус:</strong> ${task.status}`;
+
+                // *** ИСПРАВЛЕНО ЗДЕСЬ ***
+                // Проверяем все возможные варианты именования поля
+                const relativePath = task.original_path || task.originalPath || task.OriginalPath;
+
+                if ((task.status === 'COMPLETE' || task.status === 'DONE')) {
+                    clearInterval(poll);
+                    taskPolls.delete(taskId);
+
+                    if (relativePath && typeof relativePath === 'string') {
+                        // *** И ИСПРАВЛЕНО ЗДЕСЬ ***
+                        // Добавляем префикс /images/ и строим остальные пути
+                        const originalPath = `/images/${relativePath}`;
+                        const resizedPath = originalPath.replace('original/', 'processed/resize/');
+                        const thumbnailPath = originalPath.replace('original/', 'processed/thumbnail/');
+                        const watermarkPath = originalPath.replace('original/', 'processed/watermark/');
+
+                        imageContainer.className = 'image-grid';
+                        imageContainer.innerHTML = `
+                                <div class="grid-item"><img src="${originalPath}" alt="Original" onerror="this.parentElement.innerHTML += '<br><span class=\'error\'>Ошибка загрузки</span>'"><div class="label">Original</div></div>
+                                <div class="grid-item"><img src="${resizedPath}" alt="Resized" onerror="this.parentElement.innerHTML += '<br><span class=\'error\'>Ошибка загрузки</span>'"><div class="label">Resized</div></div>
+                                <div class="grid-item"><img src="${thumbnailPath}" alt="Thumbnail" onerror="this.parentElement.innerHTML += '<br><span class=\'error\'>Ошибка загрузки</span>'"><div class="label">Thumbnail</div></div>
+                                <div class="grid-item"><img src="${watermarkPath}" alt="Watermark" onerror="this.parentElement.innerHTML += '<br><span class=\'error\'>Ошибка загрузки</span>'"><div class="label">Watermark</div></div>
+                            `;
+                    } else {
+                        console.error("Задача завершена, но путь к изображению не найден в ответе:", task);
+                        imageContainer.innerHTML = `<span class="error">Ошибка: Сервер не вернул путь к изображению. Статус: ${task.status}.</span>`;
+                    }
+
+                } else if (task.status === 'FAILED') {
+                    clearInterval(poll);
+                    taskPolls.delete(taskId);
+                    imageContainer.innerHTML = '<span class="error">Обработка не удалась</span>';
+                }
+            } catch (error) {
+                console.error(`Ошибка проверки статуса для ${taskId}:`, error);
+                statusElem.innerHTML = `<strong>Статус:</strong> <span class="error">ОШИБКА</span>`;
+                imageContainer.innerHTML = `<span class="error">${error.message}</span>`;
+                clearInterval(poll);
+                taskPolls.delete(taskId);
+            }
+        }, 2000);
+        taskPolls.set(taskId, poll);
+    }
+
+    async function deleteImage(taskId) {
+        if (!confirm(`Вы уверены, что хотите удалить изображение ${taskId}?`)) return;
+        try {
+            const response = await fetch(`/image/${taskId}`, { method: 'DELETE' });
+            if (!response.ok && response.status !== 204) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Не удалось удалить изображение');
+            }
+
+            if (taskPolls.has(taskId)) {
+                clearInterval(taskPolls.get(taskId));
+                taskPolls.delete(taskId);
+            }
+
+            const card = document.getElementById(taskId);
+            if (card) card.remove();
+
+            let tasks = JSON.parse(localStorage.getItem('imageTasks')) || [];
+            tasks = tasks.filter(id => id !== taskId);
+            localStorage.setItem('imageTasks', JSON.stringify(tasks));
+        } catch (error) {
+            console.error('Ошибка удаления:', error);
+            errorMessage.textContent = `Ошибка: ${error.message}`;
+        }
+    }
+</script>
+</body>
+</html>
